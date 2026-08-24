@@ -1,0 +1,58 @@
+{
+  "name": "@breakoutscanner/mcp-sdk",
+  "version": "0.1.0-preview.1",
+  "description": "Thin TypeScript client for the Breakout Scanner authenticated Streamable HTTP MCP pilot.",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "Breakout Scanner",
+    "email": "support@breakoutscanner.com",
+    "url": "https://breakoutscanner.com"
+  },
+  "homepage": "https://breakoutscanner.com/developers",
+  "bugs": {
+    "url": "https://github.com/AKP-Ventures/breakoutscanner-mcp/issues",
+    "email": "support@breakoutscanner.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AKP-Ventures/breakoutscanner-mcp.git",
+    "directory": "packages/sdk"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "breakout-scanner",
+    "streamable-http",
+    "typescript"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public",
+    "tag": "preview"
+  },
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm test"
+  }
+}

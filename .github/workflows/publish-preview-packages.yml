@@ -1,0 +1,94 @@
+name: Publish MCP packages (preview)
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Package to publish after the preview release gate
+        required: true
+        type: choice
+        options:
+          - sdk
+          - cli
+          - both
+      confirmation:
+        description: Type publish-preview to authorize npm publication
+        required: true
+        type: string
+
+concurrency:
+  group: publish-mcp-preview
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: ${{ inputs.confirmation == 'publish-preview' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out the release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Node.js for the npm registry
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Use an npm version that supports trusted publishing
+        run: npm install --global npm@11.5.1
+
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Verify the preview package metadata and local gates
+        env:
+          RELEASE_PACKAGE: ${{ inputs.package }}
+        run: |
+          set -euo pipefail
+          test "$RELEASE_PACKAGE" = sdk || test "$RELEASE_PACKAGE" = cli || test "$RELEASE_PACKAGE" = both
+          npm run verify
+
+      - name: Confirm selected versions have not already been published
+        env:
+          RELEASE_PACKAGE: ${{ inputs.package }}
+        run: |
+          set -euo pipefail
+          release_version="$(node -p 'require("./packages/sdk/package.json").version')"
+          assert_unpublished() {
+            if npm view "$1@$release_version" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+              echo "$1@$release_version is already published" >&2
+              exit 1
+            fi
+          }
+          if test "$RELEASE_PACKAGE" = sdk || test "$RELEASE_PACKAGE" = both; then
+            assert_unpublished @breakoutscanner/mcp-sdk
+          fi
+          if test "$RELEASE_PACKAGE" = cli || test "$RELEASE_PACKAGE" = both; then
+            assert_unpublished @breakoutscanner/mcp-cli
+          fi
+
+      - name: Confirm the SDK preview is available for a CLI-only publication
+        if: ${{ inputs.package == 'cli' }}
+        run: npm view "@breakoutscanner/mcp-sdk@$(node -p 'require("./packages/sdk/package.json").version')" version --registry=https://registry.npmjs.org
+
+      - name: Publish the SDK preview
+        if: ${{ inputs.package == 'sdk' || inputs.package == 'both' }}
+        run: npm publish --workspace @breakoutscanner/mcp-sdk --access public --tag preview
+
+      - name: Confirm the SDK preview is available before publishing the CLI
+        if: ${{ inputs.package == 'both' }}
+        run: npm run smoke:registry -- sdk
+
+      - name: Publish the CLI preview
+        if: ${{ inputs.package == 'cli' || inputs.package == 'both' }}
+        run: npm publish --workspace @breakoutscanner/mcp-cli --access public --tag preview
+
+      - name: Smoke-test the published registry artifacts
+        env:
+          RELEASE_PACKAGE: ${{ inputs.package }}
+        run: npm run smoke:registry -- "$RELEASE_PACKAGE"

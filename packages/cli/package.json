@@ -1,0 +1,64 @@
+{
+  "name": "@breakoutscanner/mcp-cli",
+  "version": "0.1.0-preview.1",
+  "description": "CLI for discovering and calling the Breakout Scanner authenticated MCP pilot.",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "Breakout Scanner",
+    "email": "support@breakoutscanner.com",
+    "url": "https://breakoutscanner.com"
+  },
+  "homepage": "https://breakoutscanner.com/developers",
+  "bugs": {
+    "url": "https://github.com/AKP-Ventures/breakoutscanner-mcp/issues",
+    "email": "support@breakoutscanner.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AKP-Ventures/breakoutscanner-mcp.git",
+    "directory": "packages/cli"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "breakout-scanner",
+    "streamable-http",
+    "cli"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "preview"
+  },
+  "type": "module",
+  "types": "./dist/cli.d.ts",
+  "main": "./dist/cli.js",
+  "exports": {
+    ".": {
+      "types": "./dist/cli.d.ts",
+      "import": "./dist/cli.js",
+      "default": "./dist/cli.js"
+    }
+  },
+  "bin": {
+    "breakout-scanner": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@breakoutscanner/mcp-sdk": "0.1.0-preview.1"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "postbuild": "chmod +x dist/cli.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm test"
+  }
+}

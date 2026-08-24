@@ -1,0 +1,39 @@
+{
+  "name": "breakoutscanner-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Public TypeScript SDK and CLI packages for the Breakout Scanner MCP workspace.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AKP-Ventures/breakoutscanner-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AKP-Ventures/breakoutscanner-mcp/issues",
+    "email": "support@breakoutscanner.com"
+  },
+  "homepage": "https://breakoutscanner.com/developers",
+  "workspaces": [
+    "packages/sdk",
+    "packages/cli"
+  ],
+  "engines": {
+    "node": ">=20",
+    "npm": ">=10"
+  },
+  "packageManager": "npm@11.5.1",
+  "devDependencies": {
+    "@types/node": "^20.19.33",
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "build": "npm run build --workspace @breakoutscanner/mcp-sdk && npm run build --workspace @breakoutscanner/mcp-cli",
+    "typecheck": "npm run typecheck --workspace @breakoutscanner/mcp-sdk && npm run build --workspace @breakoutscanner/mcp-sdk && npm run typecheck --workspace @breakoutscanner/mcp-cli",
+    "test": "npm run build --workspace @breakoutscanner/mcp-sdk && npm test --workspace @breakoutscanner/mcp-sdk && npm test --workspace @breakoutscanner/mcp-cli",
+    "verify:metadata": "node scripts/verify-release.mjs",
+    "verify:pack": "node scripts/verify-release.mjs --pack",
+    "verify": "npm run verify:metadata && npm run build && npm run typecheck && npm test && npm run verify:pack",
+    "pack:dry-run": "npm run verify:pack",
+    "smoke:registry": "node scripts/smoke-registry.mjs"
+  }
+}
