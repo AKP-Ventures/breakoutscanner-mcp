@@ -23,8 +23,8 @@
   },
   "packageManager": "npm@11.5.1",
   "devDependencies": {
-    "@types/node": "^20.19.33",
-    "typescript": "^5.9.3"
+    "@types/node": "^26.4.0",
+    "typescript": "^7.0.2"
   },
   "scripts": {
     "build": "npm run build --workspace @breakoutscanner/mcp-sdk && npm run build --workspace @breakoutscanner/mcp-cli",
