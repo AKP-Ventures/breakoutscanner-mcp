@@ -2,11 +2,19 @@ export type JsonPrimitive = null | boolean | number | string;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
 
-export const SDK_VERSION = "0.1.0-preview.1" as const;
-export const DEFAULT_PROTOCOL_VERSION = "2025-06-18" as const;
+export const SDK_VERSION = "0.1.0-preview.2" as const;
+export const CURRENT_PROTOCOL_VERSION = "2026-07-28" as const;
+export const LEGACY_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18"] as const;
+/** The modern protocol is preferred; legacy is selected after a failed probe. */
+export const DEFAULT_PROTOCOL_VERSION = CURRENT_PROTOCOL_VERSION;
 export const MCP_TOOL_PREFIX = "breakout_scanner_" as const;
 /** Maximum response size used when no per-client limit is supplied. */
-export const DEFAULT_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+// A capability payload may be 8 MiB. Authenticated tools also include that
+// envelope in both structuredContent and serialized TextContent for legacy
+// clients, so the wire response can be materially larger than the logical
+// payload. Keep the safety ceiling explicit and configurable; never truncate.
+export const DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
+export const DEFAULT_TIMEOUT_MS = 300 * 1000;
 
 const MAX_ALLOWED_RESPONSE_BYTES = 64 * 1024 * 1024;
 const MAX_ERROR_MESSAGE_CHARS = 512;
@@ -65,6 +73,19 @@ export interface CapabilityContractEntry {
     readonly operation: "tools/call";
     readonly toolName: string;
   };
+}
+
+export type McpProtocolEra = "modern" | "legacy";
+export type McpVersionNegotiation = "auto" | "modern" | "legacy";
+
+export interface McpServerDiscovery {
+  readonly resultType: "complete";
+  readonly supportedVersions: readonly string[];
+  readonly capabilities: Record<string, unknown>;
+  readonly instructions?: string;
+  readonly ttlMs?: number;
+  readonly cacheScope?: "public" | "private" | string;
+  readonly [key: string]: unknown;
 }
 
 export interface McpTool {
@@ -135,7 +156,7 @@ export interface FetchCapabilityContractOptions {
   readonly fetch?: typeof globalThis.fetch;
   readonly timeoutMs?: number;
   readonly allowInsecureHttp?: boolean;
-  /** Maximum response body size in bytes. Defaults to 4 MiB. */
+  /** Maximum response body size in bytes. Defaults to 64 MiB. */
   readonly maxResponseBytes?: number;
 }
 
@@ -146,13 +167,22 @@ export interface McpClientOptions {
   readonly fetch?: typeof globalThis.fetch;
   readonly clientName?: string;
   readonly clientVersion?: string;
+  /**
+   * Protocol version to pin. Omitting it enables automatic modern probe with
+   * a safe fallback to the legacy initialize/session flow.
+   */
   readonly protocolVersion?: string;
+  /**
+   * Select automatic dual-era negotiation, modern-only, or legacy-only mode.
+   * A supplied protocolVersion takes precedence when it identifies an era.
+   */
+  readonly versionNegotiation?: McpVersionNegotiation;
   readonly timeoutMs?: number;
   readonly allowInsecureHttp?: boolean;
-  /** Maximum MCP response body size in bytes. Defaults to 4 MiB. */
+  /** Maximum MCP response body size in bytes. Defaults to 64 MiB. */
   readonly maxResponseBytes?: number;
   /**
-   * Explicitly opt into the anonymous deterministic sandbox. This is only
+   * Explicitly opt into the anonymous simulated sandbox. This is only
    * accepted for an endpoint whose path is exactly `/mcp/sandbox`; production
    * workspace endpoints still require a token.
    */
@@ -428,6 +458,62 @@ function responseErrorMessage(body: unknown, fallback: string): string {
   return errorMessage(body, fallback);
 }
 
+function protocolErrorCode(error: McpClientError): number | null {
+  const details = isRecord(error.details) && isRecord(error.details.error)
+    ? error.details.error
+    : error.details;
+  return isRecord(details) && typeof details.code === "number" ? details.code : null;
+}
+
+/**
+ * A 2026 probe may reach a server that only implements the initialize-era
+ * transport. Only protocol/route incompatibility is eligible for fallback;
+ * auth failures, rate limits, timeouts, and upstream failures must surface to
+ * the caller instead of being hidden behind a second request.
+ */
+function canFallbackFromModernProbe(error: unknown): boolean {
+  if (!(error instanceof McpClientError)) return false;
+  const code = protocolErrorCode(error);
+  if (code === -32601 || code === -32022) return true;
+  return error.status === 400 || error.status === 404 || error.status === 405 || error.status === 415;
+}
+
+function modernRequestMeta(clientName: string, clientVersion: string): JsonObject {
+  return {
+    "io.modelcontextprotocol/protocolVersion": CURRENT_PROTOCOL_VERSION,
+    "io.modelcontextprotocol/clientInfo": {
+      name: clientName,
+      version: clientVersion,
+    },
+    // Tasks are intentionally not declared until the server has a reviewed
+    // implementation of SEP-2663. A modern request with `{}` remains valid
+    // and does not imply support for optional extensions.
+    "io.modelcontextprotocol/clientCapabilities": {},
+  };
+}
+
+function modernResult(result: Record<string, unknown>, method: string): Record<string, unknown> {
+  if (result.resultType !== "complete") {
+    throw new McpClientError({
+      code: "protocol_error",
+      message: `MCP ${method} returned unsupported modern result type`,
+      details: { resultType: result.resultType },
+    });
+  }
+  return result;
+}
+
+function modernSupported(result: Record<string, unknown>): string[] {
+  if (!Array.isArray(result.supportedVersions)
+    || !result.supportedVersions.every((value) => typeof value === "string")) {
+    throw new McpClientError({
+      code: "invalid_response",
+      message: "MCP server/discover returned an invalid supportedVersions list",
+    });
+  }
+  return result.supportedVersions as string[];
+}
+
 export function mcpToolName(capabilityOrTool: string): string {
   const value = capabilityOrTool.trim();
   if (value.startsWith(MCP_TOOL_PREFIX)) return value;
@@ -505,13 +591,17 @@ export class McpClient {
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly clientName: string;
   private readonly clientVersion: string;
-  private readonly protocolVersion: string;
+  private readonly requestedProtocolVersion: string | undefined;
+  private readonly versionNegotiation: McpVersionNegotiation;
   private readonly timeoutMs: number;
   private readonly maxResponseBytes: number;
   private nextRequestId = 1;
   private sessionId: string | null = null;
   private initialized = false;
   private initializePromise: Promise<Record<string, unknown>> | null = null;
+  private era: McpProtocolEra | null = null;
+  private negotiatedProtocolVersion: string | null = null;
+  private serverDiscovery: McpServerDiscovery | null = null;
 
   constructor(options: McpClientOptions) {
     const parsed = endpointUrl(options.endpoint, options.allowInsecureHttp ?? false);
@@ -532,8 +622,27 @@ export class McpClient {
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.clientName = options.clientName?.trim() || "breakout-scanner-sdk";
     this.clientVersion = options.clientVersion?.trim() || SDK_VERSION;
-    this.protocolVersion = options.protocolVersion?.trim() || DEFAULT_PROTOCOL_VERSION;
-    this.timeoutMs = validatedTimeoutMs(options.timeoutMs, 60_000);
+    this.requestedProtocolVersion = options.protocolVersion?.trim() || undefined;
+    const inferredMode: McpVersionNegotiation = this.requestedProtocolVersion === CURRENT_PROTOCOL_VERSION
+      ? "modern"
+      : this.requestedProtocolVersion
+        ? "legacy"
+        : "auto";
+    this.versionNegotiation = options.versionNegotiation ?? inferredMode;
+    if (this.versionNegotiation === "modern" && this.requestedProtocolVersion != null
+      && this.requestedProtocolVersion !== CURRENT_PROTOCOL_VERSION) {
+      throw new McpClientError({
+        code: "invalid_arguments",
+        message: "modern versionNegotiation requires protocolVersion 2026-07-28 or no protocolVersion",
+      });
+    }
+    if (this.versionNegotiation === "legacy" && this.requestedProtocolVersion === CURRENT_PROTOCOL_VERSION) {
+      throw new McpClientError({
+        code: "invalid_arguments",
+        message: "legacy versionNegotiation cannot use protocolVersion 2026-07-28",
+      });
+    }
+    this.timeoutMs = validatedTimeoutMs(options.timeoutMs, DEFAULT_TIMEOUT_MS);
     this.maxResponseBytes = validatedMaxResponseBytes(options.maxResponseBytes);
   }
 
@@ -549,22 +658,35 @@ export class McpClient {
   async initialize(): Promise<Record<string, unknown>> {
     if (this.initialized) return { initialized: true };
     if (this.initializePromise) return this.initializePromise;
-    this.initializePromise = this.request("initialize", {
-      protocolVersion: this.protocolVersion,
-      capabilities: {},
-      clientInfo: { name: this.clientName, version: this.clientVersion },
-    }).then((result) => {
-      this.initialized = true;
-      return result;
-    }).finally(() => {
+    this.initializePromise = this.negotiate().finally(() => {
       this.initializePromise = null;
     });
     return this.initializePromise;
   }
 
+  /**
+   * Return the modern discovery result when the endpoint supports it. A
+   * legacy-only endpoint returns `null` after its initialize handshake; this
+   * makes the downgrade visible without fabricating modern capabilities.
+   */
+  async discoverServer(): Promise<McpServerDiscovery | null> {
+    await this.initialize();
+    return this.serverDiscovery;
+  }
+
+  /** The selected wire era after initialize/automatic negotiation. */
+  get protocolEra(): McpProtocolEra | null {
+    return this.era;
+  }
+
+  /** The negotiated date-based protocol revision, when initialized. */
+  get protocolVersion(): string | null {
+    return this.negotiatedProtocolVersion;
+  }
+
   async listTools(): Promise<McpToolsListResult> {
     await this.initialize();
-    const result = await this.request("tools/list", {});
+    const result = await this.request("tools/list", {}, {}, this.requiredEra());
     if (!isRecord(result) || !Array.isArray(result.tools)) {
       throw new McpClientError({ code: "invalid_response", message: "MCP tools/list returned an invalid result" });
     }
@@ -577,43 +699,146 @@ export class McpClient {
     options: CallToolOptions = {},
   ): Promise<McpToolCallResult> {
     await this.initialize();
+    const name = mcpToolName(capabilityOrTool);
     const result = await this.request("tools/call", {
-      name: mcpToolName(capabilityOrTool),
+      name,
       arguments: argumentsValue,
-    }, options);
+    }, options, this.requiredEra(), name);
     if (!isRecord(result)) {
       throw new McpClientError({ code: "invalid_response", message: "MCP tools/call returned an invalid result" });
     }
     return result as McpToolCallResult;
   }
 
+  private requiredEra(): McpProtocolEra {
+    if (this.era) return this.era;
+    // `initialize()` sets this before any public operation continues. Keep a
+    // defensive failure here in case a future method bypasses that boundary.
+    throw new McpClientError({ code: "protocol_error", message: "MCP client has not negotiated a protocol era" });
+  }
+
+  private async negotiate(): Promise<Record<string, unknown>> {
+    if (this.versionNegotiation !== "legacy") {
+      try {
+        const result = await this.request("server/discover", {}, {}, "modern");
+        const discovery = modernResult(result, "server/discover");
+        const supportedVersions = modernSupported(discovery);
+        if (!supportedVersions.includes(CURRENT_PROTOCOL_VERSION)) {
+          if (this.versionNegotiation === "modern") {
+            throw new McpClientError({
+              code: "protocol_error",
+              message: "The MCP server did not advertise protocol version 2026-07-28",
+              details: { supportedVersions },
+            });
+          }
+          // A successful modern RPC can still advertise a legacy-only server
+          // (for example, through a compatibility gateway). Downgrade only if
+          // it explicitly offers an initialize-era revision.
+          if (!supportedVersions.some((value) => LEGACY_PROTOCOL_VERSIONS.includes(value as (typeof LEGACY_PROTOCOL_VERSIONS)[number]))) {
+            throw new McpClientError({
+              code: "protocol_error",
+              message: "The MCP server advertises no mutually supported protocol version",
+              details: { supportedVersions },
+            });
+          }
+          return this.initializeLegacy(supportedVersions);
+        }
+        this.era = "modern";
+        this.negotiatedProtocolVersion = CURRENT_PROTOCOL_VERSION;
+        this.serverDiscovery = discovery as McpServerDiscovery;
+        this.initialized = true;
+        return discovery;
+      } catch (error) {
+        if (this.versionNegotiation === "modern" || !canFallbackFromModernProbe(error)) throw error;
+        return this.initializeLegacy();
+      }
+    }
+    return this.initializeLegacy();
+  }
+
+  private async initializeLegacy(advertisedVersions?: readonly string[]): Promise<Record<string, unknown>> {
+    const configured = this.requestedProtocolVersion;
+    const advertisedLegacy = advertisedVersions?.filter((value): value is string =>
+      LEGACY_PROTOCOL_VERSIONS.includes(value as (typeof LEGACY_PROTOCOL_VERSIONS)[number]),
+    );
+    const protocolVersion = configured && configured !== CURRENT_PROTOCOL_VERSION
+      ? configured
+      : advertisedLegacy?.[0] ?? LEGACY_PROTOCOL_VERSIONS[0];
+    this.era = "legacy";
+    this.negotiatedProtocolVersion = protocolVersion;
+    this.serverDiscovery = null;
+    this.sessionId = null;
+    const result = await this.request("initialize", {
+      protocolVersion,
+      capabilities: {},
+      clientInfo: { name: this.clientName, version: this.clientVersion },
+    }, {}, "legacy");
+    const responseProtocol = typeof result.protocolVersion === "string" && result.protocolVersion !== CURRENT_PROTOCOL_VERSION
+      ? result.protocolVersion
+      : protocolVersion;
+    this.negotiatedProtocolVersion = responseProtocol;
+    this.initialized = true;
+    return result;
+  }
+
   private async request(
     method: string,
     params: JsonObject,
     options: CallToolOptions = {},
+    era: McpProtocolEra = this.requiredEra(),
+    name?: string,
   ): Promise<Record<string, unknown>> {
     const id = this.nextRequestId++;
     const timeout = timeoutSignal(validatedTimeoutMs(options.timeoutMs, this.timeoutMs));
     const headers: Record<string, string> = {
       Accept: "application/json, text/event-stream",
       "Content-Type": "application/json",
-      "MCP-Protocol-Version": this.protocolVersion,
     };
+    const requestParams: JsonObject = era === "modern"
+      ? { ...params, _meta: modernRequestMeta(this.clientName, this.clientVersion) }
+      : params;
+    if (era === "modern") {
+      headers["MCP-Protocol-Version"] = CURRENT_PROTOCOL_VERSION;
+      headers["Mcp-Method"] = method;
+      if (name) headers["Mcp-Name"] = name;
+    } else {
+      headers["MCP-Protocol-Version"] = this.negotiatedProtocolVersion
+        ?? this.requestedProtocolVersion
+        ?? LEGACY_PROTOCOL_VERSIONS[0];
+    }
     if (this.token) headers.Authorization = `Bearer ${this.token}`;
-    if (this.sessionId) headers["MCP-Session-Id"] = this.sessionId;
+    if (era === "legacy" && this.sessionId) headers["MCP-Session-Id"] = this.sessionId;
     if (options.idempotencyKey) headers["Idempotency-Key"] = options.idempotencyKey;
     let response: Response;
     try {
       response = await this.fetchImpl(this.endpoint, {
         method: "POST",
         headers,
-        body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+        body: JSON.stringify({ jsonrpc: "2.0", id, method, params: requestParams }),
         redirect: "error",
         signal: timeout.signal,
       });
       const responseSession = response.headers.get("Mcp-Session-Id") || response.headers.get("MCP-Session-Id");
-      if (responseSession) this.sessionId = responseSession;
-      const body = parseResponse(await readResponseBody(response, this.maxResponseBytes, timeout.signal), response.headers.get("content-type"));
+      if (era === "legacy" && responseSession) this.sessionId = responseSession;
+      const raw = await readResponseBody(response, this.maxResponseBytes, timeout.signal);
+      let body: JsonRpcResponse;
+      try {
+        body = parseResponse(raw, response.headers.get("content-type"));
+      } catch (error) {
+        // Some legacy gateways reject the modern protocol header with a plain
+        // HTTP 400/405 response instead of a JSON-RPC error. Preserve the
+        // status so automatic negotiation can downgrade safely.
+        if (!response.ok && error instanceof McpClientError) {
+          throw new McpClientError({
+            code: "http_error",
+            message: `MCP ${method} request failed (${response.status})`,
+            status: response.status,
+            retryable: retryableStatus(response.status),
+            details: error.toJSON(),
+          });
+        }
+        throw error;
+      }
       if (!response.ok) {
         throw new McpClientError({
           code: "http_error",
@@ -633,7 +858,7 @@ export class McpClient {
       if (!isRecord(body.result)) {
         throw new McpClientError({ code: "invalid_response", message: `MCP ${method} returned no result` });
       }
-      return body.result;
+      return era === "modern" ? modernResult(body.result, method) : body.result;
     } catch (error) {
       if (error instanceof McpClientError) throw error;
       if (timeout.signal.aborted) {

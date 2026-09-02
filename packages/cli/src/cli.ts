@@ -18,7 +18,7 @@ interface ParsedArgs {
 }
 
 function usage(): string {
-  return `Breakout Scanner MCP CLI (pilot)
+  return `Breakout Scanner MCP CLI (pilot, dual-era MCP)
 
 Usage:
   breakout-scanner discover [--contract-url URL]
@@ -31,13 +31,18 @@ Authentication:
 
 Options:
   --url URL              Authenticated Streamable HTTP MCP endpoint
-  --sandbox              Use the anonymous deterministic /mcp/sandbox endpoint (no token)
+  --sandbox              Use the anonymous simulated /mcp/sandbox endpoint (no token)
   --contract-url URL     Public capability contract endpoint for discover
   --input JSON|@FILE     JSON arguments for call (default: {})
   --idempotency-key UUID Explicit write/read idempotency key
   --token-stdin          Read the bearer token from stdin without echoing it
   --insecure-local       Allow HTTP only for localhost development
   --help                 Show this help
+
+The SDK probes MCP 2026-07-28 with server/discover and falls back to the
+2025-11-25/2025-06-18 initialize flow when the endpoint is legacy-only.
+Authenticated tool calls remain synchronous; Tasks/background polling is not
+advertised by this release.
 `;
 }
 

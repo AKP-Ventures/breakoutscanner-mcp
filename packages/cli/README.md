@@ -2,7 +2,7 @@
 
 [`@breakoutscanner/mcp-cli`](https://www.npmjs.com/package/@breakoutscanner/mcp-cli)
 is a command-line client for discovering and calling Breakout Scanner's
-Streamable HTTP MCP workspace. Version `0.1.0-preview.1` is the current source
+Streamable HTTP MCP workspace. Version `0.1.0-preview.2` is the current source
 preview for npm's `preview` tag and may change before the stable 0.1.0 release.
 
 The `breakout-scanner` command delegates protocol handling and typed errors to
@@ -17,7 +17,7 @@ support, email [support@breakoutscanner.com](mailto:support@breakoutscanner.com)
 ## Install
 
 ```bash
-npm install --global @breakoutscanner/mcp-cli@0.1.0-preview.1
+npm install --global @breakoutscanner/mcp-cli@0.1.0-preview.2
 ```
 
 Use `@preview` when you explicitly want the current preview tag. Pin an exact
@@ -60,6 +60,11 @@ printf '%s\n' "$TOKEN_FROM_SECRET_STORE" | \
 `--url` defaults to `BREAKOUT_SCANNER_MCP_URL` when set, otherwise
 `https://breakoutscanner.com/mcp`. Tool arguments may be inline JSON or read
 from a file with `--input @path/to/input.json`.
+
+The bundled SDK probes `server/discover` using MCP `2026-07-28` before `list`
+or `call`. It falls back to the `2025-11-25`/`2025-06-18` initialize flow when
+the endpoint is legacy-only. Calls remain synchronous; this preview does not
+claim support for the official SEP-2663 Tasks/background extension.
 
 For a write-capable capability, provide an idempotency key when its public
 contract requires one:
@@ -109,5 +114,6 @@ npm test --workspace @breakoutscanner/mcp-cli
 npm pack --workspace @breakoutscanner/mcp-cli --dry-run
 ```
 
-See [`RELEASING.md`](../../RELEASING.md) for publication and
-[`SECURITY.md`](../../SECURITY.md) for private vulnerability reports.
+See the public repository's [`RELEASING.md`](https://github.com/AKP-Ventures/breakoutscanner-mcp/blob/main/RELEASING.md)
+for publication and [`SECURITY.md`](https://github.com/AKP-Ventures/breakoutscanner-mcp/blob/main/SECURITY.md)
+for vulnerability reports.

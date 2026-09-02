@@ -1,6 +1,6 @@
 {
   "name": "@breakoutscanner/mcp-cli",
-  "version": "0.1.0-preview.1",
+  "version": "0.1.0-preview.2",
   "description": "CLI for discovering and calling the Breakout Scanner authenticated MCP pilot.",
   "license": "Apache-2.0",
   "author": {
@@ -51,7 +51,7 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@breakoutscanner/mcp-sdk": "0.1.0-preview.1"
+    "@breakoutscanner/mcp-sdk": "0.1.0-preview.2"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

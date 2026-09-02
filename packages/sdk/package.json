@@ -1,6 +1,6 @@
 {
   "name": "@breakoutscanner/mcp-sdk",
-  "version": "0.1.0-preview.1",
+  "version": "0.1.0-preview.2",
   "description": "Thin TypeScript client for the Breakout Scanner authenticated Streamable HTTP MCP pilot.",
   "license": "Apache-2.0",
   "author": {

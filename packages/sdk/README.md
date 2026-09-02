@@ -2,11 +2,12 @@
 
 [`@breakoutscanner/mcp-sdk`](https://www.npmjs.com/package/@breakoutscanner/mcp-sdk)
 is a small TypeScript client for Breakout Scanner's Streamable HTTP MCP
-workspace. Version `0.1.0-preview.1` is the current source preview for npm's
+workspace. Version `0.1.0-preview.2` is the current source preview for npm's
 `preview` tag and may change before the stable 0.1.0 release.
 
-The SDK handles public capability discovery, MCP initialization, tool listing,
-JSON-RPC tool calls, session headers, bounded timeouts, and typed errors. It is
+The SDK handles public capability discovery, modern `server/discover` protocol
+negotiation with a legacy initialize/session fallback, tool listing, JSON-RPC
+tool calls, bounded timeouts, and typed errors. It is
 a transport client: it does not implement market or workspace business logic,
 store credentials, or grant access. The remote service remains authoritative
 for authentication, account eligibility, capability grants, approval,
@@ -19,7 +20,7 @@ The package supports Node.js 20 or newer and uses the runtime's standard
 ## Install
 
 ```bash
-npm install @breakoutscanner/mcp-sdk@0.1.0-preview.1
+npm install @breakoutscanner/mcp-sdk@0.1.0-preview.2
 ```
 
 Use `@preview` when you explicitly want the current preview tag. Pin the exact
@@ -46,6 +47,15 @@ console.log(contract.capabilities.map(({ name }) => name));
 console.log(await client.listTools());
 console.log(await client.callTool("market.snapshot", { symbols: ["NVDA"] }));
 ```
+
+By default the client probes MCP `2026-07-28` with `server/discover`. If the
+endpoint is legacy-only, it selects the highest supported initialize-era
+revision (`2025-11-25` or `2025-06-18`) and keeps the session headers on later
+requests. Pin an era when required with `versionNegotiation: "modern"` or
+`versionNegotiation: "legacy"`; `protocolVersion` can pin a specific date.
+Authenticated Breakout Scanner calls remain synchronous in this preview. The
+server does not advertise SEP-2663 Tasks/background polling, so the SDK never
+pretends a long call has become a task.
 
 `fetchCapabilityContract` performs a public GET request and does not send a
 bearer token. It exposes canonical capability names, schemas, permissions,
@@ -95,6 +105,6 @@ npm test --workspace @breakoutscanner/mcp-sdk
 npm pack --workspace @breakoutscanner/mcp-sdk --dry-run
 ```
 
-See the repository's [`RELEASING.md`](../../RELEASING.md) for the publication
-checklist and [`SECURITY.md`](../../SECURITY.md) for private vulnerability
-reports.
+See the public repository's [`RELEASING.md`](https://github.com/AKP-Ventures/breakoutscanner-mcp/blob/main/RELEASING.md)
+for the publication checklist and [`SECURITY.md`](https://github.com/AKP-Ventures/breakoutscanner-mcp/blob/main/SECURITY.md)
+for vulnerability reports.

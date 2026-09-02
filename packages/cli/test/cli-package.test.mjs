@@ -53,13 +53,13 @@ test("package metadata exposes the CLI bin and SDK dependency", async () => {
   const metadata = JSON.parse(await readFile(path.join(packageDirectory, "package.json"), "utf8"));
   const license = await readFile(path.join(packageDirectory, "LICENSE"), "utf8");
   assert.equal(metadata.name, "@breakoutscanner/mcp-cli");
-  assert.equal(metadata.version, "0.1.0-preview.1");
+  assert.equal(metadata.version, "0.1.0-preview.2");
   assert.equal(metadata.license, "Apache-2.0");
   assert.equal(metadata.author.email, "support@breakoutscanner.com");
   assert.equal(metadata.publishConfig.access, "public");
   assert.equal(metadata.publishConfig.tag, "preview");
   assert.equal(metadata.bin["breakout-scanner"], "dist/cli.js");
-  assert.equal(metadata.dependencies["@breakoutscanner/mcp-sdk"], "0.1.0-preview.1");
+  assert.equal(metadata.dependencies["@breakoutscanner/mcp-sdk"], "0.1.0-preview.2");
   assert.equal(metadata.exports["."].import, "./dist/cli.js");
   assert.match(license, /Apache License\s+Version 2\.0/u);
 });

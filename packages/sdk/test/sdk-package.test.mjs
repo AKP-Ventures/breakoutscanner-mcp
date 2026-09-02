@@ -20,12 +20,19 @@ function jsonResponse(body, headers = {}) {
   });
 }
 
-test("the packaged SDK performs an MCP handshake and tool call", async () => {
+test("the packaged SDK probes modern MCP and safely falls back to initialize", async () => {
   const calls = [];
   const fetchMock = async (_input, init) => {
     const headers = new Headers(init?.headers);
     const body = JSON.parse(String(init?.body));
     calls.push({ body, headers, redirect: init?.redirect });
+    if (body.method === "server/discover") {
+      return jsonResponse({
+        jsonrpc: "2.0",
+        id: body.id,
+        error: { code: -32601, message: "Method not found" },
+      });
+    }
     const result = body.method === "initialize"
       ? { protocolVersion: "2025-06-18", serverInfo: { name: "package-test" } }
       : body.method === "tools/list"
@@ -46,12 +53,58 @@ test("the packaged SDK performs an MCP handshake and tool call", async () => {
 
   assert.deepEqual(listed.tools.map(({ name }) => name), ["breakout_scanner_market_snapshot"]);
   assert.equal(called.content[0].text, "ok");
-  assert.deepEqual(calls.map(({ body }) => body.method), ["initialize", "tools/list", "tools/call"]);
+  assert.deepEqual(calls.map(({ body }) => body.method), ["server/discover", "initialize", "tools/list", "tools/call"]);
+  assert.equal(calls[0].headers.get("mcp-protocol-version"), "2026-07-28");
+  assert.equal(calls[0].headers.get("mcp-method"), "server/discover");
+  assert.equal(calls[0].headers.get("mcp-name"), null);
+  assert.equal(calls[0].body.params._meta["io.modelcontextprotocol/protocolVersion"], "2026-07-28");
+  assert.equal(calls[1].headers.get("mcp-protocol-version"), "2025-11-25");
+  assert.equal(calls[1].headers.get("mcp-method"), null);
   assert.equal(calls[0].headers.get("authorization"), "Bearer package-test-token");
-  assert.equal(calls[0].redirect, "error");
-  assert.equal(calls[2].headers.get("mcp-session-id"), "package-test-session");
-  assert.equal(calls[2].headers.get("idempotency-key"), "12345678-1234-5123-8123-123456789012");
-  assert.equal(calls[2].body.params.name, "breakout_scanner_market_snapshot");
+  assert.equal(calls[1].redirect, "error");
+  assert.equal(calls[2].headers.get("mcp-protocol-version"), "2025-06-18");
+  assert.equal(calls[3].headers.get("mcp-session-id"), "package-test-session");
+  assert.equal(calls[3].headers.get("idempotency-key"), "12345678-1234-5123-8123-123456789012");
+  assert.equal(calls[3].body.params.name, "breakout_scanner_market_snapshot");
+  assert.equal(calls[3].body.params._meta, undefined);
+});
+
+test("the packaged SDK uses stateless modern requests after a successful server/discover", async () => {
+  const calls = [];
+  const fetchMock = async (_input, init) => {
+    const headers = new Headers(init?.headers);
+    const body = JSON.parse(String(init?.body));
+    calls.push({ body, headers });
+    const result = body.method === "server/discover"
+      ? {
+          resultType: "complete",
+          supportedVersions: ["2026-07-28", "2025-11-25"],
+          capabilities: { tools: {} },
+          _meta: { "io.modelcontextprotocol/serverInfo": { name: "modern-test", version: "1.1.0" } },
+        }
+      : body.method === "tools/list"
+        ? { resultType: "complete", tools: [{ name: "breakout_scanner_market_snapshot" }] }
+        : { resultType: "complete", content: [{ type: "text", text: "ok" }], isError: false };
+    return jsonResponse({ jsonrpc: "2.0", id: body.id, result }, { "Mcp-Session-Id": "must-not-be-used" });
+  };
+
+  const client = new McpClient({
+    endpoint: "https://breakoutscanner.com/mcp",
+    token: "package-test-token",
+    fetch: fetchMock,
+  });
+  await client.listTools();
+  await client.callTool("market.snapshot", { symbols: ["ACME"] });
+
+  assert.equal(client.protocolEra, "modern");
+  assert.equal(client.protocolVersion, "2026-07-28");
+  assert.deepEqual(calls.map(({ body }) => body.method), ["server/discover", "tools/list", "tools/call"]);
+  assert.ok(calls.every(({ headers }) => headers.get("mcp-protocol-version") === "2026-07-28"));
+  assert.equal(calls[1].headers.get("mcp-method"), "tools/list");
+  assert.equal(calls[2].headers.get("mcp-method"), "tools/call");
+  assert.equal(calls[2].headers.get("mcp-name"), "breakout_scanner_market_snapshot");
+  assert.equal(calls[2].headers.get("mcp-session-id"), null);
+  assert.equal(calls[2].body.params._meta["io.modelcontextprotocol/clientCapabilities"] instanceof Object, true);
 });
 
 test("capability discovery rejects an oversized Content-Length before reading the body", async () => {
@@ -95,6 +148,7 @@ test("MCP responses are bounded while streaming without a Content-Length", async
   const client = new McpClient({
     endpoint: "https://breakoutscanner.com/mcp",
     token: "package-test-token",
+    versionNegotiation: "legacy",
     maxResponseBytes: 64,
     fetch: fetchMock,
   });
@@ -116,6 +170,7 @@ test("the MCP body timeout remains active until streaming response consumption f
   const client = new McpClient({
     endpoint: "https://breakoutscanner.com/mcp",
     token: "package-test-token",
+    versionNegotiation: "legacy",
     timeoutMs: 1_000,
     fetch: fetchMock,
   });
@@ -143,6 +198,7 @@ test("remote error messages and details are truncated and redact credentials", a
   const client = new McpClient({
     endpoint: "https://breakoutscanner.com/mcp",
     token: "package-test-token",
+    versionNegotiation: "legacy",
     fetch: fetchMock,
   });
 
@@ -168,6 +224,7 @@ test("SSE parsing bounds event accumulation and maxResponseBytes is validated", 
   const client = new McpClient({
     endpoint: "https://breakoutscanner.com/mcp",
     token: "package-test-token",
+    versionNegotiation: "legacy",
     fetch: fetchMock,
   });
 
@@ -187,7 +244,7 @@ test("package metadata is ready for the public preview channel", async () => {
   const metadata = JSON.parse(await readFile(path.join(packageDirectory, "package.json"), "utf8"));
   const license = await readFile(path.join(packageDirectory, "LICENSE"), "utf8");
   assert.equal(metadata.name, "@breakoutscanner/mcp-sdk");
-  assert.equal(metadata.version, "0.1.0-preview.1");
+  assert.equal(metadata.version, "0.1.0-preview.2");
   assert.equal(metadata.license, "Apache-2.0");
   assert.equal(metadata.author.email, "support@breakoutscanner.com");
   assert.equal(metadata.publishConfig.access, "public");
